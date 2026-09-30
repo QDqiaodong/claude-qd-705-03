@@ -1,0 +1,494 @@
+/* 麦芽绿主色 + 浅底深字的酒厂控制台配色 */
+:root {
+  --bw-primary: #7cb342;
+  --bw-primary-dark: #5b8a2a;
+  --bw-primary-soft: #eef6e4;
+  --bw-bg: #f6f8f2;
+  --bw-panel: #ffffff;
+  --bw-border: #dfe6d3;
+  --bw-text: #26301d;
+  --bw-text-sub: #6b7760;
+  --bw-danger: #c0392b;
+  --bw-warn: #ef6c00;
+  --bw-ok: #4b8a25;
+  --bw-steel: #b9c2cb;
+  --bw-steel-dark: #8d99a6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bw-bg);
+  color: var(--bw-text);
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+}
+
+/* ---------- 外壳 ---------- */
+.shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 顶部固定条：品牌 + 计数器 */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 22px;
+  background: linear-gradient(90deg, #4b7b21 0%, var(--bw-primary) 60%, #9ccc65 100%);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(91, 138, 42, 0.25);
+}
+
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.22);
+  font-size: 18px;
+}
+
+.brand-sub {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.top-stats {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stat-chip {
+  min-width: 76px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  text-align: center;
+  line-height: 1.25;
+}
+
+.stat-chip b {
+  display: block;
+  font-size: 16px;
+}
+
+.stat-chip span {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.stat-chip.is-alert {
+  background: rgba(192, 57, 43, 0.85);
+}
+
+/* 横向模块条 */
+.navbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 22px;
+  background: #fff;
+  border-bottom: 1px solid var(--bw-border);
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--bw-border);
+  border-radius: 20px;
+  background: #fff;
+  color: var(--bw-text-sub);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.nav-btn:hover {
+  border-color: var(--bw-primary);
+  color: var(--bw-primary);
+}
+
+.nav-btn.is-on {
+  background: var(--bw-primary);
+  border-color: var(--bw-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.nav-ico {
+  margin-right: 4px;
+}
+
+/* ---------- 主舞台 ---------- */
+.stage {
+  flex: 1;
+  padding: 16px 22px 26px;
+}
+
+.panel {
+  background: var(--bw-panel);
+  border: 1px solid var(--bw-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.panel-title .hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--bw-text-sub);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ---------- 发酵罐阵列 ---------- */
+.tank-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.tank {
+  width: 108px;
+  cursor: pointer;
+  text-align: center;
+  transition: transform 0.15s;
+}
+
+.tank:hover {
+  transform: translateY(-4px);
+}
+
+.tank.is-dim {
+  opacity: 0.45;
+}
+
+/* 罐体：顶部椭圆封头 + 圆柱筒身 + 锥底，全部纯 CSS */
+.tank-body {
+  position: relative;
+  width: 74px;
+  height: 152px;
+  margin: 0 auto 6px;
+  border-radius: 40px 40px 6px 6px;
+  background: linear-gradient(100deg, var(--bw-steel) 0%, #e2e8ee 34%, #f4f7fa 46%, var(--bw-steel-dark) 100%);
+  border: 1px solid #9aa5b1;
+  overflow: hidden;
+  box-shadow: inset -6px 0 10px rgba(0, 0, 0, 0.12), 0 3px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* 顶部封头（椭圆） */
+.tank-body::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  border-radius: 50% 50% 12% 12% / 70% 70% 30% 30%;
+  background: linear-gradient(100deg, #cfd7de, #fbfdff 45%, #aeb8c2);
+  border-bottom: 1px solid #9aa5b1;
+}
+
+/* 锥底 */
+.tank-cone {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 34px;
+  clip-path: polygon(0 0, 100% 0, 62% 100%, 38% 100%);
+  background: linear-gradient(100deg, #aeb8c2, #eef2f6 45%, #8d99a6);
+  opacity: 0.55;
+}
+
+/* 液位：从底部往上填，颜色跟随阶段 */
+.tank-fill {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 0;
+  border-radius: 0 0 5px 5px;
+  transition: height 0.4s ease;
+}
+
+.tank-fill-surface {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 6px;
+  border-radius: 50%;
+  filter: brightness(1.18);
+}
+
+.tank-pct {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #26301d;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.7);
+}
+
+.tank-no {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.tank-meta {
+  font-size: 11px;
+  color: var(--bw-text-sub);
+  line-height: 1.5;
+}
+
+.stage-badge {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* 阶段标签 */
+.stage-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.stage-tab {
+  padding: 5px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--bw-border);
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--bw-text-sub);
+}
+
+.stage-tab.is-on {
+  background: var(--bw-primary-soft);
+  border-color: var(--bw-primary);
+  color: var(--bw-primary-dark);
+  font-weight: 700;
+}
+
+.stage-tab .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+}
+
+/* ---------- 卡片墙（配方） ---------- */
+.card-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.recipe-card {
+  border: 1px solid var(--bw-border);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+  transition: box-shadow 0.15s;
+}
+
+.recipe-card:hover {
+  box-shadow: 0 4px 14px rgba(91, 138, 42, 0.18);
+}
+
+.recipe-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* CSS conic-gradient 环形图 */
+.ring {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  position: relative;
+  flex: 0 0 76px;
+}
+
+.ring::after {
+  content: '';
+  position: absolute;
+  inset: 15px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.ring-label {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bw-primary-dark);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--bw-text-sub);
+}
+
+.legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+/* ---------- 工艺时间线 ---------- */
+.timeline {
+  border-left: 2px solid var(--bw-border);
+  padding-left: 14px;
+  margin-left: 6px;
+}
+
+.tl-item {
+  position: relative;
+  padding: 4px 0 12px;
+}
+
+.tl-item::before {
+  content: '';
+  position: absolute;
+  left: -21px;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bw-border);
+  border: 2px solid #fff;
+}
+
+.tl-item.is-done::before {
+  background: var(--bw-primary);
+}
+
+.tl-time {
+  font-size: 12px;
+  color: var(--bw-text-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-name {
+  font-weight: 600;
+}
+
+/* ---------- 表格辅助 ---------- */
+.row-danger {
+  color: var(--bw-danger);
+  font-weight: 700;
+}
+
+.tag-inline {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #fff;
+}
+
+.summary-strip {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.summary-box {
+  flex: 1 1 150px;
+  border: 1px solid var(--bw-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, #fff, var(--bw-primary-soft));
+}
+
+.summary-box b {
+  display: block;
+  font-size: 19px;
+  color: var(--bw-primary-dark);
+}
+
+.summary-box span {
+  font-size: 12px;
+  color: var(--bw-text-sub);
+}
+
+.empty-tip {
+  padding: 26px;
+  text-align: center;
+  color: var(--bw-text-sub);
+}
+
+.el-table th {
+  background: var(--bw-primary-soft) !important;
+  color: var(--bw-text) !important;
+}
