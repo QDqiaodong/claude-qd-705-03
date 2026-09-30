@@ -24,6 +24,11 @@ public final class BatchDtos {
 
         private String fermenterNo;
 
+        /** 模块七：计划罐号 / 计划入罐时间（PLAN 排程） */
+        private String plannedTankNo;
+
+        private LocalDateTime plannedEnterAt;
+
         @NotBlank(message = "酿酒师不能为空")
         private String brewer;
 

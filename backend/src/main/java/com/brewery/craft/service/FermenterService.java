@@ -14,12 +14,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.brewery.craft.common.BizException;
 import com.brewery.craft.domain.Batch;
+import com.brewery.craft.domain.BatchTankHistory;
 import com.brewery.craft.domain.Fermenter;
 import com.brewery.craft.domain.Ingredient;
 import com.brewery.craft.domain.Shipment;
 import com.brewery.craft.dto.FermenterDtos;
 import com.brewery.craft.dto.Views;
 import com.brewery.craft.repository.BatchRepository;
+import com.brewery.craft.repository.BatchTankHistoryRepository;
 import com.brewery.craft.repository.FermenterRepository;
 import com.brewery.craft.repository.IngredientRepository;
 import com.brewery.craft.repository.RecipeRepository;
@@ -37,17 +39,23 @@ public class FermenterService {
     private final IngredientRepository ingredientRepository;
     private final ShipmentRepository shipmentRepository;
     private final RecipeRepository recipeRepository;
+    private final BatchTankHistoryRepository batchTankHistoryRepository;
+    private final MaintenanceService maintenanceService;
 
     public FermenterService(FermenterRepository fermenterRepository,
                             BatchRepository batchRepository,
                             IngredientRepository ingredientRepository,
                             ShipmentRepository shipmentRepository,
-                            RecipeRepository recipeRepository) {
+                            RecipeRepository recipeRepository,
+                            BatchTankHistoryRepository batchTankHistoryRepository,
+                            MaintenanceService maintenanceService) {
         this.fermenterRepository = fermenterRepository;
         this.batchRepository = batchRepository;
         this.ingredientRepository = ingredientRepository;
         this.shipmentRepository = shipmentRepository;
         this.recipeRepository = recipeRepository;
+        this.batchTankHistoryRepository = batchTankHistoryRepository;
+        this.maintenanceService = maintenanceService;
     }
 
     /** 罐列表：液位 = 罐上当前批次的产量 / 罐容 */
@@ -143,6 +151,8 @@ public class FermenterService {
         if ("DISABLED".equals(tank.getStatus())) {
             throw new BizException("停用罐不能承接批次");
         }
+        // 模块七：罐在维护窗口内不能手工安排入罐（不是前端隐藏，服务端硬拦）
+        maintenanceService.assertTankAvailableNow(tank.getTankNo());
         Batch batch = batchRepository.findByBatchNo(req.getBatchNo())
                 .orElseThrow(() -> new BizException("批次 " + req.getBatchNo() + " 不存在"));
         if ("SCRAPPED".equals(batch.getStatus())) {
@@ -156,14 +166,43 @@ public class FermenterService {
                 && batch.getVolumeL().compareTo(tank.getCapacityL()) > 0) {
             throw new BizException("批次产量 " + batch.getVolumeL() + "L 超出罐容 " + tank.getCapacityL() + "L");
         }
+        LocalDateTime now = LocalDateTime.now();
+        String previousTank = batch.getFermenterNo();
         batch.setFermenterNo(tank.getTankNo());
-        batch.setUpdatedAt(LocalDateTime.now());
+        batch.setPlannedTankNo(null);
+        batch.setPlannedEnterAt(null);
+        batch.setUpdatedAt(now);
         batchRepository.save(batch);
 
         tank.setCurrentBatchNo(batch.getBatchNo());
         tank.setStatus(Views.tankStatusOfBatch(batch.getStatus()));
-        tank.setUpdatedAt(LocalDateTime.now());
+        tank.setUpdatedAt(now);
         Fermenter saved = fermenterRepository.save(tank);
+
+        // 模块七：登记一段占罐履历（手工入罐）。同一罐重复入罐不重复开段。
+        if (!tank.getTankNo().equals(previousTank)) {
+            boolean openExists = batchTankHistoryRepository
+                    .findFirstByBatchIdAndLeftAtIsNullOrderByEnteredAtDescIdDesc(batch.getId())
+                    .map(h -> tank.getTankNo().equals(h.getTankNo()))
+                    .orElse(false);
+            if (!openExists) {
+                batchTankHistoryRepository
+                        .findFirstByBatchIdAndLeftAtIsNullOrderByEnteredAtDescIdDesc(batch.getId())
+                        .ifPresent(h -> {
+                            h.setLeftAt(now);
+                            h.setLeaveReason("TRANSFER_OUT");
+                            batchTankHistoryRepository.save(h);
+                        });
+                BatchTankHistory h = new BatchTankHistory();
+                h.setBatchId(batch.getId());
+                h.setBatchNo(batch.getBatchNo());
+                h.setStage(batch.getStatus());
+                h.setTankNo(tank.getTankNo());
+                h.setEnteredAt(now);
+                h.setEnterReason("ASSIGN");
+                batchTankHistoryRepository.save(h);
+            }
+        }
         return Views.FermenterView.of(saved, fillPercent(saved));
     }
 
@@ -172,11 +211,19 @@ public class FermenterService {
     public Views.FermenterView release(Long id) {
         Fermenter tank = fermenterRepository.findById(id)
                 .orElseThrow(() -> new BizException("发酵罐不存在"));
+        LocalDateTime now = LocalDateTime.now();
         if (tank.getCurrentBatchNo() != null) {
             batchRepository.findByBatchNo(tank.getCurrentBatchNo()).ifPresent(batch -> {
                 batch.setFermenterNo(null);
-                batch.setUpdatedAt(LocalDateTime.now());
+                batch.setUpdatedAt(now);
                 batchRepository.save(batch);
+                batchTankHistoryRepository
+                        .findFirstByBatchIdAndLeftAtIsNullOrderByEnteredAtDescIdDesc(batch.getId())
+                        .ifPresent(h -> {
+                            h.setLeftAt(now);
+                            h.setLeaveReason("RELEASE");
+                            batchTankHistoryRepository.save(h);
+                        });
             });
         }
         tank.setCurrentBatchNo(null);

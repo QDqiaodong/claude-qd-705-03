@@ -106,6 +106,29 @@
           <el-descriptions-item label="占用罐">{{ detail.fermenterNo || '—' }}</el-descriptions-item>
         </el-descriptions>
 
+        <el-divider content-position="left">历史罐号履历（维护迁罐只追加，不拆曲线、不重置阶段）</el-divider>
+        <el-table :data="tankHistory" size="small" border max-height="180">
+          <el-table-column label="罐号" width="100">
+            <template #default="{ row }">
+              <b>{{ row.tankNo }}</b>
+              <el-tag v-if="row.current" size="small" type="success" style="margin-left: 6px">当前</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="stageName" label="入罐阶段" width="100" />
+          <el-table-column label="进入时间" width="160">
+            <template #default="{ row }">{{ fmtFull(row.enteredAt) }}</template>
+          </el-table-column>
+          <el-table-column label="离开时间" width="160">
+            <template #default="{ row }">{{ fmtFull(row.leftAt) }}</template>
+          </el-table-column>
+          <el-table-column label="原因" min-width="160">
+            <template #default="{ row }">
+              {{ enterReasonName(row.enterReason) }}
+              <span v-if="row.leaveReason"> → {{ leaveReasonName(row.leaveReason) }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
         <el-divider content-position="left">逐日温度 / 糖度</el-divider>
         <el-table :data="detail.curve || []" size="small" border max-height="200">
           <el-table-column prop="dayKey" label="第 N 天" width="100" />
@@ -335,7 +358,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { batchApi, qcApi, recipeApi } from '../api'
+import { batchApi, batchTankHistoryApi, qcApi, recipeApi } from '../api'
 
 const rows = ref([])
 const recipes = ref([])
@@ -346,8 +369,19 @@ const createForm = ref({ batchNo: '', recipeId: null, brewer: '', brewDate: '', 
 
 const detailVisible = ref(false)
 const detail = ref({})
+const tankHistory = ref([])
 const qc = ref({ rounds: [], actions: [], current: null })
 const qcBusy = ref(false)
+
+function fmtFull(v) {
+  return v ? String(v).replace('T', ' ').slice(0, 16) : '—'
+}
+function enterReasonName(r) {
+  return { ASSIGN: '手工入罐', TRANSFER: '维护迁罐', RELEASE: '出罐' }[r] || r || '—'
+}
+function leaveReasonName(r) {
+  return { TRANSFER_OUT: '迁出（维护）', RELEASE: '出罐灌装/报废' }[r] || r || '—'
+}
 
 const submitVisible = ref(false)
 const submitForm = ref({ operator: '', note: '', clientToken: '' })
@@ -435,6 +469,7 @@ async function submitCreate() {
 async function openDetail(row) {
   detailVisible.value = true
   detail.value = await batchApi.get(row.id)
+  tankHistory.value = await batchTankHistoryApi.history(row.id)
   await loadQc()
 }
 

@@ -87,4 +87,10 @@ public class BatchController {
                                                         @PathVariable("dayKey") String dayKey) {
         return ApiResponse.success(batchService.reading(id, dayKey));
     }
+
+    /** 模块七：批次历史罐号履历（维护迁罐不断曲线、逐段留痕） */
+    @GetMapping("/{id}/tank-history")
+    public ApiResponse<List<Views.TankHistoryView>> tankHistory(@PathVariable("id") Long id) {
+        return ApiResponse.success(batchService.tankHistory(id));
+    }
 }

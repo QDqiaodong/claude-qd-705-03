@@ -98,3 +98,33 @@ export const shippingApi = {
   nextStatus: (id) => http.post(`/shipping/shipments/${id}/next`),
   summary: () => http.get('/shipping/summary')
 }
+
+/** 模块七：发酵罐维护窗口与在制批次迁罐 */
+export const maintenanceApi = {
+  windows: () => http.get('/maintenance/windows'),
+  window: (id) => http.get(`/maintenance/windows/${id}`),
+  register: (data) => http.post('/maintenance/windows', data),
+  adjust: (id, data) => http.post(`/maintenance/windows/${id}/adjust`, data),
+  cancel: (id, data) => http.post(`/maintenance/windows/${id}/cancel`, data),
+  start: (id, data) => http.post(`/maintenance/windows/${id}/start`, data),
+  finish: (id, data) => http.post(`/maintenance/windows/${id}/finish`, data),
+  timeline: (id) => http.get(`/maintenance/windows/${id}/timeline`),
+  conflicts: () => http.get('/maintenance/conflicts'),
+  planEntry: (data) => http.post('/maintenance/plan-entry', data),
+  propose: (maintenanceId, batchId, data) =>
+    http.post(`/maintenance/windows/${maintenanceId}/batches/${batchId}/transfer-proposal`, data),
+  plans: (maintenanceId) =>
+    http.get('/maintenance/transfers', { params: maintenanceId ? { maintenanceId } : {} }),
+  plan: (planId) => http.get(`/maintenance/transfers/${planId}`),
+  confirm: (planId, data) => http.post(`/maintenance/transfers/${planId}/confirm`, data),
+  completeStep: (planId, stepSeq, operator) =>
+    http.post(`/maintenance/transfers/${planId}/steps/${stepSeq}/done`, null, { params: { operator } }),
+  fail: (planId, data) => http.post(`/maintenance/transfers/${planId}/fail`, data),
+  resume: (planId, data) => http.post(`/maintenance/transfers/${planId}/resume`, data),
+  cancelPlan: (planId, data) => http.post(`/maintenance/transfers/${planId}/cancel`, data)
+}
+
+/** 批次历史罐号履历 */
+export const batchTankHistoryApi = {
+  history: (batchId) => http.get(`/batches/${batchId}/tank-history`)
+}

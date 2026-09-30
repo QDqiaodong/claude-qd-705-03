@@ -70,6 +70,16 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 模块七：迁罐方案过期 —— 维护窗口/目标罐/批次条件在确认前被别人改动，
+     * 或同一目标罐已被另一条合法迁移抢占。旧方案作废，必须重新计算。
+     */
+    @ExceptionHandler(com.brewery.craft.common.StaleTransferException.class)
+    public ResponseEntity<ApiResponse<Void>> handleStaleTransfer(
+            com.brewery.craft.common.StaleTransferException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.fail(e.getMessage()));
+    }
+
+    /**
      * 悲观行锁等待超时：并发的放行/下游推进已被串行化，提示重试而不是产生两条状态链
      */
     @ExceptionHandler(CannotAcquireLockException.class)

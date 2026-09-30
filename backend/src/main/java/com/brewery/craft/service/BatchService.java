@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.brewery.craft.common.BizException;
 import com.brewery.craft.domain.Batch;
 import com.brewery.craft.domain.BatchRecipeItem;
+import com.brewery.craft.domain.BatchTankHistory;
 import com.brewery.craft.domain.Fermenter;
 import com.brewery.craft.domain.QcRound;
 import com.brewery.craft.domain.Recipe;
@@ -22,6 +23,7 @@ import com.brewery.craft.dto.BatchDtos;
 import com.brewery.craft.dto.Views;
 import com.brewery.craft.repository.BatchRecipeItemRepository;
 import com.brewery.craft.repository.BatchRepository;
+import com.brewery.craft.repository.BatchTankHistoryRepository;
 import com.brewery.craft.repository.FermenterRepository;
 import com.brewery.craft.repository.QcRoundRepository;
 import com.brewery.craft.repository.RecipeRepository;
@@ -38,6 +40,7 @@ public class BatchService {
     private final QcRoundRepository qcRoundRepository;
     private final ShipmentRepository shipmentRepository;
     private final BatchRecipeItemRepository batchRecipeItemRepository;
+    private final BatchTankHistoryRepository batchTankHistoryRepository;
     private final BatchSnapshotAssembler snapshotAssembler;
     private final QcGate qcGate;
 
@@ -47,6 +50,7 @@ public class BatchService {
                         QcRoundRepository qcRoundRepository,
                         ShipmentRepository shipmentRepository,
                         BatchRecipeItemRepository batchRecipeItemRepository,
+                        BatchTankHistoryRepository batchTankHistoryRepository,
                         BatchSnapshotAssembler snapshotAssembler,
                         QcGate qcGate) {
         this.batchRepository = batchRepository;
@@ -55,6 +59,7 @@ public class BatchService {
         this.qcRoundRepository = qcRoundRepository;
         this.shipmentRepository = shipmentRepository;
         this.batchRecipeItemRepository = batchRecipeItemRepository;
+        this.batchTankHistoryRepository = batchTankHistoryRepository;
         this.snapshotAssembler = snapshotAssembler;
         this.qcGate = qcGate;
     }
@@ -123,6 +128,8 @@ public class BatchService {
         b.setBatchNo(req.getBatchNo());
         b.setRecipeId(req.getRecipeId());
         b.setFermenterNo(req.getFermenterNo());
+        b.setPlannedTankNo(req.getPlannedTankNo());
+        b.setPlannedEnterAt(req.getPlannedEnterAt());
         b.setBrewer(req.getBrewer());
         b.setBrewDate(req.getBrewDate() == null ? LocalDate.now() : req.getBrewDate());
         b.setMashStart(req.getMashStart());
@@ -253,6 +260,7 @@ public class BatchService {
             if (batch.getBatchNo().equals(t.getCurrentBatchNo())) {
                 t.setCurrentBatchNo(null);
                 t.setStatus("CLEANING");
+                closeTankHistory(batch, LocalDateTime.now());
             }
         } else if (batch.getBatchNo().equals(t.getCurrentBatchNo()) || t.getCurrentBatchNo() == null) {
             t.setCurrentBatchNo(batch.getBatchNo());
@@ -260,6 +268,17 @@ public class BatchService {
         }
         t.setUpdatedAt(LocalDateTime.now());
         fermenterRepository.save(t);
+    }
+
+    /** 出罐（灌装/报废）：关闭当前占罐履历段 */
+    private void closeTankHistory(Batch batch, LocalDateTime at) {
+        batchTankHistoryRepository
+                .findFirstByBatchIdAndLeftAtIsNullOrderByEnteredAtDescIdDesc(batch.getId())
+                .ifPresent(h -> {
+                    h.setLeftAt(at);
+                    h.setLeaveReason("RELEASE");
+                    batchTankHistoryRepository.save(h);
+                });
     }
 
     /** 【@ElementCollection Map】写入或覆盖某一天的测温/测糖 */
@@ -297,6 +316,17 @@ public class BatchService {
         one.put("gravity", b.getGravityReadings().get(dayKey));
         one.put("dayKey", BigDecimal.valueOf(Views.dayKeyOrder(dayKey) == Integer.MAX_VALUE ? 0 : Views.dayKeyOrder(dayKey)));
         return one;
+    }
+
+    /** 模块七：批次历史罐号履历（换罐不断曲线，每段占罐逐行留痕） */
+    public List<Views.TankHistoryView> tankHistory(Long id) {
+        Batch b = batchRepository.findById(id).orElseThrow(() -> new BizException("批次不存在"));
+        List<Views.TankHistoryView> list = new ArrayList<>();
+        for (com.brewery.craft.domain.BatchTankHistory h
+                : batchTankHistoryRepository.findAllByBatchIdOrderByEnteredAtAscIdAsc(b.getId())) {
+            list.add(Views.TankHistoryView.of(h));
+        }
+        return list;
     }
 
     /** 产量汇总：按状态聚合 */

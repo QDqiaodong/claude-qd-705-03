@@ -9,15 +9,22 @@ import java.util.List;
 import java.util.Map;
 
 import com.brewery.craft.domain.Batch;
+import com.brewery.craft.domain.BatchTankHistory;
 import com.brewery.craft.domain.Bottling;
 import com.brewery.craft.domain.Fermenter;
+import com.brewery.craft.domain.FermenterMaintenance;
 import com.brewery.craft.domain.Ingredient;
+import com.brewery.craft.domain.MaintenanceEvent;
 import com.brewery.craft.domain.QcAction;
 import com.brewery.craft.domain.QcReading;
 import com.brewery.craft.domain.QcRound;
 import com.brewery.craft.domain.Recipe;
 import com.brewery.craft.domain.RecipeItem;
 import com.brewery.craft.domain.Shipment;
+import com.brewery.craft.domain.TankTransferEvent;
+import com.brewery.craft.domain.TankTransferPlan;
+import com.brewery.craft.domain.TankTransferStep;
+import com.brewery.craft.domain.TransferReservation;
 
 import lombok.Data;
 
@@ -258,6 +265,83 @@ public final class Views {
         return digits.isEmpty() ? Integer.MAX_VALUE : Integer.parseInt(digits);
     }
 
+    // ---------------- 模块七：维护窗口 / 迁罐 ----------------
+    private static final Map<String, String> MAINT_TYPE = Map.of(
+            "PLANNED", "计划维护",
+            "EMERGENCY", "突发停机");
+
+    private static final Map<String, String> MAINT_STATUS = Map.of(
+            "SCHEDULED", "计划中",
+            "IN_PROGRESS", "维护中",
+            "FINISHED", "已结束",
+            "CANCELLED", "已取消");
+
+    private static final Map<String, String> MAINT_STATUS_COLOR = Map.of(
+            "SCHEDULED", "#e6a23c",
+            "IN_PROGRESS", "#f56c6c",
+            "FINISHED", "#909399",
+            "CANCELLED", "#c0c4cc");
+
+    /** 时间线冲突结论：无冲突 / 需要迁罐 / 必须延期 / 无法处理 */
+    private static final Map<String, String> CONFLICT_RESULT = Map.of(
+            "NO_CONFLICT", "无冲突",
+            "NEED_TRANSFER", "需要迁罐",
+            "MUST_DELAY", "必须延期",
+            "UNRESOLVABLE", "无法处理");
+
+    private static final Map<String, String> CONFLICT_COLOR = Map.of(
+            "NO_CONFLICT", "#67c23a",
+            "NEED_TRANSFER", "#e6a23c",
+            "MUST_DELAY", "#409eff",
+            "UNRESOLVABLE", "#f56c6c");
+
+    /** 迁罐方案状态 */
+    private static final Map<String, String> TRANSFER_STATUS = Map.of(
+            "PENDING", "待确认",
+            "EXECUTING", "迁移中",
+            "EXECUTED", "已执行",
+            "EXPIRED", "已过期",
+            "CANCELLED", "已取消");
+
+    /** 迁移分步：断管 → 排空 → 吊运 → 复容 → 接管 */
+    public static final List<String> TRANSFER_STEP_ORDER = List.of(
+            "DISCONNECT", "DRAIN", "MOVE", "REFILL", "RECONNECT");
+
+    private static final Map<String, String> TRANSFER_STEP_NAME = Map.of(
+            "DISCONNECT", "断管隔离",
+            "DRAIN", "排空原罐",
+            "MOVE", "吊运转罐",
+            "REFILL", "目标罐复容",
+            "RECONNECT", "接管温控");
+
+    public static String maintTypeName(String v) {
+        return MAINT_TYPE.getOrDefault(v, v == null ? "" : v);
+    }
+
+    public static String maintStatusName(String v) {
+        return MAINT_STATUS.getOrDefault(v, v == null ? "" : v);
+    }
+
+    public static String maintStatusColor(String v) {
+        return MAINT_STATUS_COLOR.getOrDefault(v, "#9aa5ab");
+    }
+
+    public static String conflictName(String v) {
+        return CONFLICT_RESULT.getOrDefault(v, v == null ? "" : v);
+    }
+
+    public static String conflictColor(String v) {
+        return CONFLICT_COLOR.getOrDefault(v, "#9aa5ab");
+    }
+
+    public static String transferStatusName(String v) {
+        return TRANSFER_STATUS.getOrDefault(v, v == null ? "" : v);
+    }
+
+    public static String transferStepName(String v) {
+        return TRANSFER_STEP_NAME.getOrDefault(v, v == null ? "" : v);
+    }
+
     // ---------------- 出参视图 ----------------
     @Data
     public static class FermenterView {
@@ -325,6 +409,9 @@ public final class Views {
         private Long recipeId;
         private String recipeName;
         private String fermenterNo;
+        /** 模块七：未来待入罐批次的计划罐号与计划入罐时间 */
+        private String plannedTankNo;
+        private LocalDateTime plannedEnterAt;
         private String brewer;
         private LocalDate brewDate;
         private LocalDateTime mashStart;
@@ -375,6 +462,8 @@ public final class Views {
             v.setRecipeId(e.getRecipeId());
             v.setRecipeName(recipeName);
             v.setFermenterNo(e.getFermenterNo());
+            v.setPlannedTankNo(e.getPlannedTankNo());
+            v.setPlannedEnterAt(e.getPlannedEnterAt());
             v.setBrewer(e.getBrewer());
             v.setBrewDate(e.getBrewDate());
             v.setMashStart(e.getMashStart());
@@ -1122,5 +1211,345 @@ public final class Views {
         private long ingredientLow;
         private long shipmentPending;
         private BigDecimal shipmentAmount;
+    }
+
+    // ---------------- 模块七出参视图 ----------------
+
+    @Data
+    public static class MaintenanceEventView {
+
+        private Long id;
+        private String eventType;
+        private LocalDateTime fromStartAt;
+        private LocalDateTime toStartAt;
+        private LocalDateTime fromRecoverAt;
+        private LocalDateTime toRecoverAt;
+        private String reason;
+        private String operator;
+        private LocalDateTime createdAt;
+
+        public static MaintenanceEventView of(MaintenanceEvent e) {
+            MaintenanceEventView v = new MaintenanceEventView();
+            v.setId(e.getId());
+            v.setEventType(e.getEventType());
+            v.setFromStartAt(e.getFromStartAt());
+            v.setToStartAt(e.getToStartAt());
+            v.setFromRecoverAt(e.getFromRecoverAt());
+            v.setToRecoverAt(e.getToRecoverAt());
+            v.setReason(e.getReason());
+            v.setOperator(e.getOperator());
+            v.setCreatedAt(e.getCreatedAt());
+            return v;
+        }
+    }
+
+    /** 维护窗口（含操作历史） */
+    @Data
+    public static class MaintenanceView {
+
+        private Long id;
+        private String tankNo;
+        private String maintType;
+        private String maintTypeName;
+        private String status;
+        private String statusName;
+        private String statusColor;
+        private LocalDateTime startAt;
+        private LocalDateTime expectedRecoverAt;
+        private LocalDateTime actualRecoverAt;
+        private String reason;
+        private String impactScope;
+        private String createdBy;
+        private LocalDateTime createdAt;
+        private LocalDateTime updatedAt;
+        private Integer version;
+        private boolean editable;
+        private boolean cancellable;
+        private boolean startable;
+        private boolean finishable;
+        private List<MaintenanceEventView> events = new ArrayList<>();
+
+        public static MaintenanceView of(FermenterMaintenance e, List<MaintenanceEvent> events) {
+            MaintenanceView v = new MaintenanceView();
+            v.setId(e.getId());
+            v.setTankNo(e.getTankNo());
+            v.setMaintType(e.getMaintType());
+            v.setMaintTypeName(maintTypeName(e.getMaintType()));
+            v.setStatus(e.getStatus());
+            v.setStatusName(maintStatusName(e.getStatus()));
+            v.setStatusColor(maintStatusColor(e.getStatus()));
+            v.setStartAt(e.getStartAt());
+            v.setExpectedRecoverAt(e.getExpectedRecoverAt());
+            v.setActualRecoverAt(e.getActualRecoverAt());
+            v.setReason(e.getReason());
+            v.setImpactScope(e.getImpactScope());
+            v.setCreatedBy(e.getCreatedBy());
+            v.setCreatedAt(e.getCreatedAt());
+            v.setUpdatedAt(e.getUpdatedAt());
+            v.setVersion(e.getVersion());
+            // 已开始的维护不能取消/删除，只能延期或提前结束；计划中可调整可取消
+            v.setEditable("SCHEDULED".equals(e.getStatus()) || "IN_PROGRESS".equals(e.getStatus()));
+            v.setCancellable("SCHEDULED".equals(e.getStatus()));
+            v.setStartable("SCHEDULED".equals(e.getStatus()));
+            v.setFinishable("IN_PROGRESS".equals(e.getStatus()));
+            if (events != null) {
+                for (MaintenanceEvent ev : events) {
+                    v.getEvents().add(MaintenanceEventView.of(ev));
+                }
+            }
+            return v;
+        }
+    }
+
+    /** 单个候选目标罐的适配评估（迁罐预览逐罐列出） */
+    @Data
+    public static class TargetCandidateView {
+
+        private String tankNo;
+        private BigDecimal capacityL;
+        private BigDecimal tempMin;
+        private BigDecimal tempMax;
+        private String tankStatus;
+        private String tankStatusName;
+        private boolean idle;
+        private boolean capacityOk;
+        private boolean tempCompatible;
+        private boolean noMaintenance;
+        private boolean notReserved;
+        private boolean suitable;
+        /** 不适配原因逐条列出（容量不足/温区不兼容/维护窗口/被占用/被预留…） */
+        private List<String> mismatchReasons = new ArrayList<>();
+    }
+
+    /** 维护时间线上的一条批次影响项 */
+    @Data
+    public static class TimelineItemView {
+
+        /** 所属维护窗口（冲突清单跳时间线用） */
+        private Long maintenanceId;
+        /** OCCUPYING 当前占罐批次 / FUTURE 未来待入罐批次 */
+        private String kind;
+        private String kindName;
+        private Long batchId;
+        private String batchNo;
+        private String batchStatus;
+        private String batchStatusName;
+        /** 当前阶段（在制批次） */
+        private String stage;
+        private String stageName;
+        private BigDecimal volumeL;
+        private String tankNo;
+        /** 占罐/计划时段 */
+        private LocalDateTime occupyFrom;
+        private LocalDateTime occupyTo;
+        private LocalDateTime plannedEnterAt;
+        /** NO_CONFLICT/NEED_TRANSFER/MUST_DELAY/UNRESOLVABLE */
+        private String result;
+        private String resultName;
+        private String resultColor;
+        private String resultDetail;
+        /** 关联的生效迁罐方案（若已生成） */
+        private Long planId;
+        private String planStatus;
+        private String planStatusName;
+        private String targetTankNo;
+        /** 候选目标罐评估（NEED_TRANSFER/UNRESOLVABLE 时给出全部候选） */
+        private List<TargetCandidateView> candidates = new ArrayList<>();
+    }
+
+    /** 维护日历：窗口 + 同时间线上的批次影响项（无冲突/迁罐/延期/无法处理） */
+    @Data
+    public static class MaintenanceTimelineView {
+
+        private MaintenanceView maintenance;
+        private List<TimelineItemView> items = new ArrayList<>();
+        /** 窗口自身汇总结论：取最严重的一条（UNRESOLVABLE > NEED_TRANSFER > MUST_DELAY > NO_CONFLICT） */
+        private String overallResult;
+        private String overallResultName;
+        private String overallResultColor;
+    }
+
+    @Data
+    public static class TransferStepView {
+
+        private Long id;
+        private Integer attemptSeq;
+        private Integer stepSeq;
+        private String stepCode;
+        private String stepName;
+        /** PENDING/DONE/FAILED/ROLLED_BACK */
+        private String status;
+        private LocalDateTime startedAt;
+        private LocalDateTime finishedAt;
+        private String note;
+        private String operator;
+
+        public static TransferStepView of(TankTransferStep s) {
+            TransferStepView v = new TransferStepView();
+            v.setId(s.getId());
+            v.setAttemptSeq(s.getAttemptSeq());
+            v.setStepSeq(s.getStepSeq());
+            v.setStepCode(s.getStepCode());
+            v.setStepName(transferStepName(s.getStepCode()));
+            v.setStatus(s.getStatus());
+            v.setStartedAt(s.getStartedAt());
+            v.setFinishedAt(s.getFinishedAt());
+            v.setNote(s.getNote());
+            v.setOperator(s.getOperator());
+            return v;
+        }
+    }
+
+    @Data
+    public static class TransferEventView {
+
+        private Long id;
+        private String eventType;
+        private Integer stepSeq;
+        private Integer attemptSeq;
+        private String fromTankNo;
+        private String toTankNo;
+        private String detail;
+        private String operator;
+        private LocalDateTime createdAt;
+
+        public static TransferEventView of(TankTransferEvent e) {
+            TransferEventView v = new TransferEventView();
+            v.setId(e.getId());
+            v.setEventType(e.getEventType());
+            v.setStepSeq(e.getStepSeq());
+            v.setAttemptSeq(e.getAttemptSeq());
+            v.setFromTankNo(e.getFromTankNo());
+            v.setToTankNo(e.getToTankNo());
+            v.setDetail(e.getDetail());
+            v.setOperator(e.getOperator());
+            v.setCreatedAt(e.getCreatedAt());
+            return v;
+        }
+    }
+
+    /** 迁罐方案（含分步进度、操作流水、不适配原因） */
+    @Data
+    public static class TransferPlanView {
+
+        private Long id;
+        private Long maintenanceId;
+        private Long batchId;
+        private String batchNo;
+        private String sourceTankNo;
+        private String targetTankNo;
+        private String batchStage;
+        private String batchStageName;
+        private BigDecimal batchVolumeL;
+        private BigDecimal needTempMin;
+        private BigDecimal needTempMax;
+        private LocalDateTime plannedMoveAt;
+        private LocalDateTime reserveFrom;
+        private LocalDateTime reserveTo;
+        private String status;
+        private String statusName;
+        private Integer completedStep;
+        private Integer failedStep;
+        private String failReason;
+        private Integer attemptCount;
+        private String expiredReason;
+        private String conditionsHash;
+        private String proposedBy;
+        private LocalDateTime proposedAt;
+        private String confirmedBy;
+        private LocalDateTime confirmedAt;
+        private LocalDateTime executedAt;
+        private Integer version;
+        /** 目标罐当前是否仍满足全部条件（确认前实时复核） */
+        private boolean stillValid;
+        private List<String> mismatchReasons = new ArrayList<>();
+        private List<TransferStepView> steps = new ArrayList<>();
+        private List<TransferEventView> events = new ArrayList<>();
+
+        public static TransferPlanView of(TankTransferPlan p) {
+            return of(p, null, null, true, List.of());
+        }
+
+        public static TransferPlanView of(TankTransferPlan p,
+                                          List<TankTransferStep> steps,
+                                          List<TankTransferEvent> events,
+                                          boolean stillValid,
+                                          List<String> mismatchReasons) {
+            TransferPlanView v = new TransferPlanView();
+            v.setId(p.getId());
+            v.setMaintenanceId(p.getMaintenanceId());
+            v.setBatchId(p.getBatchId());
+            v.setBatchNo(p.getBatchNo());
+            v.setSourceTankNo(p.getSourceTankNo());
+            v.setTargetTankNo(p.getTargetTankNo());
+            v.setBatchStage(p.getBatchStage());
+            v.setBatchStageName(batchStatusName(p.getBatchStage()));
+            v.setBatchVolumeL(p.getBatchVolumeL());
+            v.setNeedTempMin(p.getNeedTempMin());
+            v.setNeedTempMax(p.getNeedTempMax());
+            v.setPlannedMoveAt(p.getPlannedMoveAt());
+            v.setReserveFrom(p.getReserveFrom());
+            v.setReserveTo(p.getReserveTo());
+            v.setStatus(p.getStatus());
+            v.setStatusName(transferStatusName(p.getStatus()));
+            v.setCompletedStep(p.getCompletedStep());
+            v.setFailedStep(p.getFailedStep());
+            v.setFailReason(p.getFailReason());
+            v.setAttemptCount(p.getAttemptCount());
+            v.setExpiredReason(p.getExpiredReason());
+            v.setConditionsHash(p.getConditionsHash());
+            v.setProposedBy(p.getProposedBy());
+            v.setProposedAt(p.getProposedAt());
+            v.setConfirmedBy(p.getConfirmedBy());
+            v.setConfirmedAt(p.getConfirmedAt());
+            v.setExecutedAt(p.getExecutedAt());
+            v.setVersion(p.getVersion());
+            v.setStillValid(stillValid);
+            if (mismatchReasons != null) {
+                v.setMismatchReasons(new ArrayList<>(mismatchReasons));
+            }
+            if (steps != null) {
+                for (TankTransferStep s : steps) {
+                    v.getSteps().add(TransferStepView.of(s));
+                }
+            }
+            if (events != null) {
+                for (TankTransferEvent e : events) {
+                    v.getEvents().add(TransferEventView.of(e));
+                }
+            }
+            return v;
+        }
+    }
+
+    /** 批次历史罐号段 */
+    @Data
+    public static class TankHistoryView {
+
+        private Long id;
+        private String tankNo;
+        private String stage;
+        private String stageName;
+        private LocalDateTime enteredAt;
+        private LocalDateTime leftAt;
+        private String enterReason;
+        private String leaveReason;
+        private Long transferPlanId;
+        private boolean current;
+
+        public static TankHistoryView of(BatchTankHistory h) {
+            TankHistoryView v = new TankHistoryView();
+            v.setId(h.getId());
+            v.setTankNo(h.getTankNo());
+            v.setStage(h.getStage());
+            v.setStageName(batchStatusName(h.getStage()));
+            v.setEnteredAt(h.getEnteredAt());
+            v.setLeftAt(h.getLeftAt());
+            v.setEnterReason(h.getEnterReason());
+            v.setLeaveReason(h.getLeaveReason());
+            v.setTransferPlanId(h.getTransferPlanId());
+            v.setCurrent(h.getLeftAt() == null);
+            return v;
+        }
     }
 }

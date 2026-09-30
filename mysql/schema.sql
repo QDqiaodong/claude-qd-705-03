@@ -37,6 +37,13 @@ DROP TABLE IF EXISTS batch_qc_temp_reading;
 DROP TABLE IF EXISTS batch_qc_gravity_reading;
 DROP TABLE IF EXISTS batch_qc_action;
 DROP TABLE IF EXISTS batch_qc_round;
+DROP TABLE IF EXISTS tank_transfer_event;
+DROP TABLE IF EXISTS tank_transfer_step;
+DROP TABLE IF EXISTS tank_transfer_reservation;
+DROP TABLE IF EXISTS tank_transfer_plan;
+DROP TABLE IF EXISTS batch_tank_history;
+DROP TABLE IF EXISTS fermenter_maintenance_event;
+DROP TABLE IF EXISTS fermenter_maintenance;
 DROP TABLE IF EXISTS batch_temp_reading;
 DROP TABLE IF EXISTS batch_gravity_reading;
 DROP TABLE IF EXISTS recipe_item_slot;
@@ -149,6 +156,8 @@ CREATE TABLE batch (
     ibu             DECIMAL(5,1)           COMMENT '苦度 IBU',
     ebc             DECIMAL(5,1)           COMMENT '色度 EBC',
     status          VARCHAR(16)   NOT NULL COMMENT 'PLAN/MASH/BOIL/FERMENT/CONDITION/PACKAGED/SCRAPPED',
+    planned_tank_no VARCHAR(16)            COMMENT '模块七：未来待入罐批次的计划罐号',
+    planned_enter_at DATETIME              COMMENT '模块七：计划入罐时间',
     updated_at      DATETIME,
     PRIMARY KEY (id),
     UNIQUE KEY uk_batch_no (batch_no),
@@ -229,6 +238,153 @@ CREATE TABLE batch_qc_action (
     KEY idx_qc_action_batch (batch_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
+
+-- ---------------- 模块七：发酵罐维护窗口与在制批次迁罐 ----------------
+-- 设计口径：
+--   维护窗口是独立时间区间（不是给罐加个“维护中”状态）；登记/改期/取消/开始/提前结束全程只追加流水；
+--   已开始的维护不能删除，已执行的迁罐不能删除，窗口变化只让待处理方案过期、不改写迁罐历史；
+--   迁罐分五步执行，失败回退到待处理；目标罐时段预留互斥，同一批次同时只有一条生效方案。
+CREATE TABLE fermenter_maintenance (
+    id                  BIGINT       NOT NULL AUTO_INCREMENT,
+    tank_no             VARCHAR(16)  NOT NULL COMMENT '维护罐号',
+    maint_type          VARCHAR(16)  NOT NULL COMMENT 'PLANNED 计划维护 / EMERGENCY 突发停机',
+    status              VARCHAR(16)  NOT NULL COMMENT 'SCHEDULED/IN_PROGRESS/FINISHED/CANCELLED',
+    start_at            DATETIME     NOT NULL COMMENT '开始时间（当前生效值）',
+    expected_recover_at DATETIME     NOT NULL COMMENT '预计恢复时间（当前生效值）',
+    actual_recover_at   DATETIME              COMMENT '实际恢复时间',
+    reason              VARCHAR(512) NOT NULL COMMENT '停机原因',
+    impact_scope        VARCHAR(512)          COMMENT '影响范围',
+    created_by          VARCHAR(32)  NOT NULL COMMENT '登记人',
+    created_at          DATETIME     NOT NULL,
+    updated_at          DATETIME     NOT NULL,
+    version             INT          NOT NULL DEFAULT 0 COMMENT '乐观锁',
+    PRIMARY KEY (id),
+    KEY idx_maint_tank (tank_no),
+    KEY idx_maint_status (status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 维护窗口操作流水（只追加）：登记/改期/取消/开始/提前结束/延期
+CREATE TABLE fermenter_maintenance_event (
+    id               BIGINT       NOT NULL AUTO_INCREMENT,
+    maintenance_id   BIGINT       NOT NULL,
+    tank_no          VARCHAR(16)  NOT NULL,
+    event_type       VARCHAR(24)  NOT NULL COMMENT 'REGISTER/RESCHEDULE/CANCEL/START/FINISH_EARLY/EXTEND',
+    from_start_at    DATETIME,
+    to_start_at      DATETIME,
+    from_recover_at  DATETIME,
+    to_recover_at    DATETIME,
+    reason           VARCHAR(512),
+    operator         VARCHAR(32)  NOT NULL,
+    created_at       DATETIME     NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_maint_event_maint (maintenance_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 迁罐方案：条件指纹 + 版本号双重过期校验；同一批次唯一生效、同一目标罐重叠时段互斥
+CREATE TABLE tank_transfer_plan (
+    id               BIGINT        NOT NULL AUTO_INCREMENT,
+    maintenance_id   BIGINT        NOT NULL,
+    batch_id         BIGINT        NOT NULL,
+    batch_no         VARCHAR(24)   NOT NULL,
+    source_tank_no   VARCHAR(16)   NOT NULL COMMENT '原罐',
+    target_tank_no   VARCHAR(16)   NOT NULL COMMENT '目标罐',
+    batch_stage      VARCHAR(16)   NOT NULL COMMENT '方案生成时批次阶段（迁移不重置阶段）',
+    batch_volume_l   DECIMAL(10,2)          COMMENT '批次产量快照',
+    need_temp_min    DECIMAL(5,2)           COMMENT '批次所需温区下限快照',
+    need_temp_max    DECIMAL(5,2)           COMMENT '批次所需温区上限快照',
+    planned_move_at  DATETIME      NOT NULL COMMENT '预计迁移时间',
+    reserve_from     DATETIME      NOT NULL COMMENT '目标罐预留起',
+    reserve_to       DATETIME      NOT NULL COMMENT '目标罐预留止（= 维护预计恢复）',
+    status           VARCHAR(16)   NOT NULL COMMENT 'PENDING/EXECUTING/EXECUTED/EXPIRED/CANCELLED',
+    completed_step   INT           NOT NULL DEFAULT 0 COMMENT '已完成到第几步 0~5',
+    failed_step      INT                    COMMENT '最近一次失败停在哪一步',
+    fail_reason      VARCHAR(512)           COMMENT '最近一次失败原因',
+    attempt_count    INT           NOT NULL DEFAULT 0 COMMENT '累计尝试次数',
+    expired_reason   VARCHAR(512)           COMMENT '过期原因',
+    conditions_hash  VARCHAR(64)   NOT NULL COMMENT '确认条件指纹（SHA-256）',
+    proposed_by      VARCHAR(32)   NOT NULL,
+    proposed_at      DATETIME      NOT NULL,
+    confirmed_by     VARCHAR(32),
+    confirmed_at     DATETIME,
+    executed_at      DATETIME,
+    created_at       DATETIME      NOT NULL,
+    updated_at       DATETIME      NOT NULL,
+    version          INT           NOT NULL DEFAULT 0 COMMENT '乐观锁',
+    PRIMARY KEY (id),
+    KEY idx_plan_maint (maintenance_id),
+    KEY idx_plan_batch (batch_id),
+    KEY idx_plan_target (target_tank_no),
+    KEY idx_plan_status (status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 单次尝试的分步进度：五步 DISCONNECT/DRAIN/MOVE/REFILL/RECONNECT；失败再来一轮，历史轮次保留
+CREATE TABLE tank_transfer_step (
+    id          BIGINT       NOT NULL AUTO_INCREMENT,
+    plan_id     BIGINT       NOT NULL,
+    attempt_seq INT          NOT NULL COMMENT '第几次尝试',
+    step_seq    INT          NOT NULL COMMENT '1~5',
+    step_code   VARCHAR(24)  NOT NULL,
+    status      VARCHAR(16)  NOT NULL COMMENT 'PENDING/DONE/FAILED/ROLLED_BACK',
+    started_at  DATETIME,
+    finished_at DATETIME,
+    note        VARCHAR(512),
+    operator    VARCHAR(32),
+    PRIMARY KEY (id),
+    KEY idx_step_plan (plan_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 迁罐操作流水（只追加）
+CREATE TABLE tank_transfer_event (
+    id          BIGINT       NOT NULL AUTO_INCREMENT,
+    plan_id     BIGINT       NOT NULL,
+    batch_id    BIGINT       NOT NULL,
+    batch_no    VARCHAR(24)  NOT NULL,
+    event_type  VARCHAR(24)  NOT NULL COMMENT 'PROPOSE/CONFIRM/STEP_DONE/STEP_FAIL/ROLLBACK/RESUME/EXECUTE/EXPIRE/CANCEL',
+    step_seq    INT,
+    attempt_seq INT,
+    from_tank_no VARCHAR(16),
+    to_tank_no  VARCHAR(16),
+    detail      VARCHAR(512),
+    operator    VARCHAR(32)  NOT NULL,
+    created_at  DATETIME     NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_tevent_plan (plan_id),
+    KEY idx_tevent_batch (batch_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 目标罐时段预留：同一目标罐重叠时段只允许一条生效预留（应用层重叠校验 + 罐行悲观锁）
+CREATE TABLE tank_transfer_reservation (
+    id             BIGINT       NOT NULL AUTO_INCREMENT,
+    plan_id        BIGINT       NOT NULL,
+    batch_id       BIGINT       NOT NULL,
+    batch_no       VARCHAR(24)  NOT NULL,
+    tank_no        VARCHAR(16)  NOT NULL,
+    reserve_from   DATETIME     NOT NULL,
+    reserve_to     DATETIME     NOT NULL,
+    status         VARCHAR(16)  NOT NULL COMMENT 'ACTIVE/RELEASED',
+    created_at     DATETIME     NOT NULL,
+    released_at    DATETIME,
+    release_reason VARCHAR(24),
+    PRIMARY KEY (id),
+    KEY idx_res_tank_time (tank_no, reserve_from, reserve_to),
+    KEY idx_res_plan (plan_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 批次历史罐号（只追加占罐履历）：换罐只开新段，批次发酵曲线/阶段时间不拆不断
+CREATE TABLE batch_tank_history (
+    id               BIGINT       NOT NULL AUTO_INCREMENT,
+    batch_id         BIGINT       NOT NULL,
+    batch_no         VARCHAR(24)  NOT NULL,
+    stage            VARCHAR(16),
+    tank_no          VARCHAR(16)  NOT NULL,
+    entered_at       DATETIME     NOT NULL,
+    left_at          DATETIME              COMMENT 'NULL=当前占用',
+    enter_reason     VARCHAR(24),
+    transfer_plan_id BIGINT,
+    leave_reason     VARCHAR(24),
+    PRIMARY KEY (id),
+    KEY idx_tankhist_batch (batch_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 -- ---------------- 模块四：原料库存 ----------------
 CREATE TABLE ingredient (
@@ -449,8 +605,8 @@ INSERT INTO batch (id, batch_no, recipe_id, fermenter_no, brewer, brew_date, mas
      1200.00, NULL, NULL, NULL, 'MASH', NOW()),
 (2,  'BC-2026-102', 5,  'FK-02', '李承泽', '2026-09-19', '2026-09-19 07:50:00', '2026-09-19 09:20:00', NULL, NULL, NULL, NULL,
      1500.00, NULL, NULL, NULL, 'BOIL', NOW()),
-(3,  'BC-2026-103', 2,  'FK-03', '陈墨',   '2026-09-10', '2026-09-10 08:00:00', '2026-09-10 09:30:00', '2026-09-10 11:00:00', '2026-09-10 14:00:00', '2026-09-28', NULL,
-     2100.00, NULL, NULL, NULL, 'FERMENT', NOW()),
+(3,  'BC-2026-103', 2,  'FK-03', '陈墨',   '2026-09-10', '2026-09-10 08:00:00', '2026-09-10 09:30:00', '2026-09-10 11:00:00', '2026-09-10 14:00:00', '2026-10-05', NULL,
+     2000.00, NULL, NULL, NULL, 'FERMENT', NOW()),
 (4,  'BC-2026-104', 3,  'FK-04', '陈墨',   '2026-09-12', '2026-09-12 08:20:00', '2026-09-12 09:50:00', '2026-09-12 11:20:00', '2026-09-12 15:00:00', '2026-09-30', NULL,
      2200.00, NULL, NULL, NULL, 'FERMENT', NOW()),
 (5,  'BC-2026-105', 6,  'FK-05', '周敏',   '2026-09-15', '2026-09-15 09:00:00', '2026-09-15 10:30:00', '2026-09-15 12:00:00', '2026-09-15 16:30:00', '2026-10-02', NULL,
@@ -474,7 +630,12 @@ INSERT INTO batch (id, batch_no, recipe_id, fermenter_no, brewer, brew_date, mas
 -- 引用历史遗留配方 R-1011 的旧批次：其用量快照由迁移回填，保留创建当时的原始单位
 (14, 'BC-2026-114', 11, NULL,    '陈墨',   '2026-07-12', '2026-07-12 08:00:00', '2026-07-12 09:30:00',
      '2026-07-12 11:00:00', '2026-07-12 16:00:00', '2026-07-30', '2026-08-02',
-     1000.00, 5.70, 27.0, 17.0, 'PACKAGED', NOW());
+     1000.00, 5.70, 27.0, 17.0, 'PACKAGED', NOW()),
+-- 模块七验收批次：
+--   BC-2026-115 在 FK-12（800L，温区 12~20℃），与 BC-2026-105 同时争抢 FK-13（目标罐抢占）
+(15, 'BC-2026-115', 6,  'FK-12', '周敏',   '2026-09-28', '2026-09-28 09:00:00', '2026-09-28 10:30:00',
+     '2026-09-28 12:00:00', '2026-09-28 16:00:00', '2026-10-12', NULL,
+      800.00, NULL, NULL, NULL, 'FERMENT', NOW());
 
 -- ---------------- 2. 逐日温度曲线（Map<String,BigDecimal>） ----------------
 INSERT INTO batch_temp_reading (batch_id, day_key, temp_value) VALUES
@@ -511,7 +672,13 @@ INSERT INTO fermenter (id, tank_no, capacity_l, material, temp_min, temp_max, co
 (9,  'FK-09',  500.00, 'STAINLESS',  0.00,  6.00, 'AIR',       'IDLE',         NULL,          NOW()),
 (10, 'FK-10', 2000.00, 'CONICAL',   18.00, 24.00, 'GLYCOL',    'IDLE',         NULL,          NOW()),
 (11, 'FK-11', 3000.00, 'STAINLESS', 15.00, 22.00, 'AIR',       'DISABLED',     NULL,          NOW()),
-(12, 'FK-12', 1000.00, 'JACKETED',  12.00, 20.00, 'GLYCOL',    'IDLE',         NULL,          NOW());
+(12, 'FK-12', 1000.00, 'JACKETED',  12.00, 20.00, 'GLYCOL',    'IDLE',         NULL,          NOW()),
+-- 模块七验收用罐：
+--   FK-13/FK-14 为同温区 900L 暖罐空闲（目标罐被抢占场景：BC-2026-105 迁 FK-13，BC-2026-115 也想抢 FK-13）
+--   FK-15 为 1200L 冷调罐空闲（容量/温区不兼容场景的候选之一）
+(13, 'FK-13',  900.00, 'CONICAL',   16.00, 22.00, 'GLYCOL',    'IDLE',         NULL,          NOW()),
+(14, 'FK-14',  900.00, 'STAINLESS', 16.00, 22.00, 'GLYCOL',    'IDLE',         NULL,          NOW()),
+(15, 'FK-15', 1200.00, 'CONICAL',    0.00,  6.00, 'GLYCOL',    'IDLE',         NULL,          NOW());
 
 -- ---------------- 5. 灌装单（12 条） ----------------
 INSERT INTO bottling (id, bottling_no, batch_no, package_form, quantity, bottle_date, loss_l, updated_at) VALUES
@@ -623,5 +790,145 @@ UPDATE shipment SET status = 'FROZEN',
                    frozen_round_seq = 1,
                    updated_at = '2026-09-25 10:30:00'
 WHERE shipment_no = 'SH-2026-11';
+
+-- ============================================================================
+-- 模块七种子数据：维护窗口 + 迁罐方案 + 分步进度 + 历史罐号（今天 = 2026-09-30）
+--
+-- 验收场景对照：
+--   [W1] FK-09  10-04~10-05 计划维护，罐本就空闲            → 计划维护无冲突
+--   [W2] FK-05  10-01 02:00 突发停机，BC-2026-105 在罐发酵  → 占罐冲突，成功迁至 FK-13
+--        （FK-13 900L/16~22℃ 兼容；FK-15 0~6℃ 温区不兼容；FK-08/09 容量不足）
+--        另有 BC-2026-115（FK-12）的方案也瞄准 FK-13        → 目标罐被抢占演示
+--   [W3] FK-04  10-02~10-03 计划维护，BC-2026-104 2200L 在罐 → 容量/温区不兼容：无法处理
+--   [W4] FK-03  10-01 06:00 突发停机，BC-2026-103 在罐       → 迁移在 MOVE 步失败、已回退待处理
+--   [W5] FK-12  10-03~10-04 计划维护（已延期过一次），方案因延期过期 → 维护延期导致方案过期
+--   [W6] FK-10  10-06~10-07 计划维护，BC-2026-113 计划当日入罐 → 未来待入罐批次必须延期
+--   [W7] FK-08  10-08~10-09 计划维护，BC-2026-112 计划恢复后入罐 → 无冲突
+--   [W8] FK-12  10-01 凌晨突发停机，BC-2026-115 的方案同样瞄准 FK-13，与 [W2] 时段重叠 → 目标罐被抢占
+-- ============================================================================
+
+-- 未来待入罐批次排程（PLAN 批次）
+UPDATE batch SET planned_tank_no = 'FK-10', planned_enter_at = '2026-10-06 09:00:00'
+WHERE batch_no = 'BC-2026-113';
+UPDATE batch SET planned_tank_no = 'FK-08', planned_enter_at = '2026-10-10 09:00:00'
+WHERE batch_no = 'BC-2026-112';
+
+INSERT INTO fermenter_maintenance
+(id, tank_no, maint_type, status, start_at, expected_recover_at, actual_recover_at, reason, impact_scope,
+ created_by, created_at, updated_at, version) VALUES
+(1, 'FK-09', 'PLANNED',   'SCHEDULED',   '2026-10-04 08:00:00', '2026-10-05 18:00:00', NULL,
+ '季度保养：更换密封圈与安全阀校验', '空闲罐，不影响在制批次', '设备-老郑', '2026-09-29 10:00:00', '2026-09-29 10:00:00', 0),
+(2, 'FK-05', 'EMERGENCY', 'SCHEDULED',   '2026-10-01 02:00:00', '2026-10-01 14:00:00', NULL,
+ '夹套 glycol 渗漏报警，需停机补焊并保压测试', '在罐批次 BC-2026-105 必须在停机前迁出', '设备-老郑',
+ '2026-09-30 08:30:00', '2026-09-30 08:30:00', 0),
+(3, 'FK-04', 'PLANNED',   'SCHEDULED',   '2026-10-02 08:00:00', '2026-10-03 20:00:00', NULL,
+ '锥底阀门更换 + 内壁抛光', '在罐批次 BC-2026-104（2200L）需提前安排', '设备-老郑',
+ '2026-09-28 14:00:00', '2026-09-28 14:00:00', 0),
+(4, 'FK-03', 'EMERGENCY', 'SCHEDULED',   '2026-10-01 06:00:00', '2026-10-02 06:00:00', NULL,
+ '温控探头漂移导致发酵温度失控，停机检修冷却回路', '在罐批次 BC-2026-103 需迁出', '设备-老郑',
+ '2026-09-30 09:15:00', '2026-09-30 09:15:00', 0),
+(5, 'FK-12', 'PLANNED',   'SCHEDULED',   '2026-10-03 20:00:00', '2026-10-04 12:00:00', NULL,
+ '夹套清洗与压力表更换（原计划 10-03 08:00~20:00，因配件到货延期）', '窗口已延期一次',
+ '设备-老郑', '2026-09-27 11:00:00', '2026-09-30 07:40:00', 1),
+(6, 'FK-10', 'PLANNED',   'SCHEDULED',   '2026-10-06 08:00:00', '2026-10-07 18:00:00', NULL,
+ '冷却盘管除垢', 'BC-2026-113 原计划当日入罐，须延后', '设备-老郑',
+ '2026-09-29 16:00:00', '2026-09-29 16:00:00', 0),
+(7, 'FK-08', 'PLANNED',   'SCHEDULED',   '2026-10-08 08:00:00', '2026-10-09 18:00:00', NULL,
+ '清洗喷头更换', 'BC-2026-112 计划 10-10 入罐，恢复后再进，无冲突', '设备-老郑',
+ '2026-09-29 16:20:00', '2026-09-29 16:20:00', 0),
+(8, 'FK-12', 'EMERGENCY', 'SCHEDULED',   '2026-10-01 02:30:00', '2026-10-01 12:00:00', NULL,
+ '罐底排污阀内漏，停机更换阀座', '在罐批次 BC-2026-115 需迁出，候选 FK-13 与 BC-2026-105 方案时段重叠', '设备-老郑',
+ '2026-09-30 08:50:00', '2026-09-30 08:50:00', 0);
+
+INSERT INTO fermenter_maintenance_event
+(id, maintenance_id, tank_no, event_type, from_start_at, to_start_at, from_recover_at, to_recover_at,
+ reason, operator, created_at) VALUES
+(1, 1, 'FK-09', 'REGISTER', NULL, NULL, NULL, NULL, '季度保养：更换密封圈与安全阀校验', '设备-老郑', '2026-09-29 10:00:00'),
+(2, 2, 'FK-05', 'REGISTER', NULL, NULL, NULL, NULL, '夹套 glycol 渗漏报警', '设备-老郑', '2026-09-30 08:30:00'),
+(3, 3, 'FK-04', 'REGISTER', NULL, NULL, NULL, NULL, '锥底阀门更换 + 内壁抛光', '设备-老郑', '2026-09-28 14:00:00'),
+(4, 4, 'FK-03', 'REGISTER', NULL, NULL, NULL, NULL, '温控探头漂移', '设备-老郑', '2026-09-30 09:15:00'),
+(5, 5, 'FK-12', 'REGISTER', NULL, NULL, NULL, NULL, '夹套清洗与压力表更换', '设备-老郑', '2026-09-27 11:00:00'),
+(6, 5, 'FK-12', 'RESCHEDULE',
+   '2026-10-03 08:00:00', '2026-10-03 20:00:00', '2026-10-03 20:00:00', '2026-10-04 12:00:00',
+   '压力表配件延期到货，停机窗口顺延', '设备-老郑', '2026-09-30 07:40:00'),
+(7, 6, 'FK-10', 'REGISTER', NULL, NULL, NULL, NULL, '冷却盘管除垢', '设备-老郑', '2026-09-29 16:00:00'),
+(8, 7, 'FK-08', 'REGISTER', NULL, NULL, NULL, NULL, '清洗喷头更换', '设备-老郑', '2026-09-29 16:20:00'),
+(9, 8, 'FK-12', 'REGISTER', NULL, NULL, NULL, NULL, '罐底排污阀内漏，停机更换阀座', '设备-老郑', '2026-09-30 08:50:00');
+
+-- 迁罐方案
+-- 预留区间 = 迁移前 1h 缓冲 ~ 维护预计恢复；迁移时间默认维护开始前 2h
+INSERT INTO tank_transfer_plan
+(id, maintenance_id, batch_id, batch_no, source_tank_no, target_tank_no, batch_stage, batch_volume_l,
+ need_temp_min, need_temp_max, planned_move_at, reserve_from, reserve_to, status, completed_step,
+ failed_step, fail_reason, attempt_count, expired_reason, conditions_hash,
+ proposed_by, proposed_at, confirmed_by, confirmed_at, executed_at, created_at, updated_at, version) VALUES
+-- P1：BC-2026-105 → FK-13，待确认（W2 主方案）
+(1, 2, 5, 'BC-2026-105', 'FK-05', 'FK-13', 'FERMENT', 800.00, 17.00, 21.00,
+ '2026-10-01 00:00:00', '2026-09-30 23:00:00', '2026-10-01 14:00:00', 'PENDING', 0, NULL, NULL, 1,
+ NULL, REPEAT('a', 64),
+ '设备-老郑', '2026-09-30 08:40:00', NULL, NULL, NULL, '2026-09-30 08:40:00', '2026-09-30 08:40:00', 0),
+-- P2：BC-2026-115 → FK-13，待确认（与 P1 在同一目标罐时段重叠；先确认的一条成功，另一条判过期重算）
+(2, 8, 15, 'BC-2026-115', 'FK-12', 'FK-13', 'FERMENT', 800.00, 12.00, 20.00,
+ '2026-10-01 00:30:00', '2026-09-30 23:30:00', '2026-10-01 12:00:00', 'PENDING', 0, NULL, NULL, 1,
+ NULL, REPEAT('b', 64),
+ '设备-老郑', '2026-09-30 08:55:00', NULL, NULL, NULL, '2026-09-30 08:55:00', '2026-09-30 08:55:00', 0),
+-- P3：BC-2026-103 → FK-10，迁移在第 3 步 MOVE 失败、已回退到待处理（W4）
+(3, 4, 3, 'BC-2026-103', 'FK-03', 'FK-10', 'FERMENT', 2000.00, 16.00, 22.00,
+ '2026-10-01 04:00:00', '2026-10-01 03:00:00', '2026-10-02 06:00:00', 'PENDING', 0,
+ 3, '吊运转罐时行车抱闸报警，酒液管路紧急回接原罐', 1,
+ NULL, REPEAT('c', 64),
+ '设备-老郑', '2026-09-30 09:20:00', '设备-老郑', '2026-09-30 09:25:00', NULL,
+ '2026-09-30 09:20:00', '2026-09-30 09:40:00', 0),
+-- P4：BC-2026-115 原 → FK-14 的方案，因 W5 窗口延期已过期（维护延期导致方案过期）
+(4, 5, 15, 'BC-2026-115', 'FK-12', 'FK-14', 'FERMENT', 800.00, 12.00, 20.00,
+ '2026-10-03 06:00:00', '2026-10-03 05:00:00', '2026-10-03 20:00:00', 'EXPIRED', 0, NULL, NULL, 0,
+ '维护窗口已延期（2026-10-03 08:00~20:00 → 2026-10-03 20:00~2026-10-04 12:00），旧方案条件已过期',
+ REPEAT('d', 64),
+ '设备-老郑', '2026-09-29 15:00:00', NULL, NULL, NULL, '2026-09-29 15:00:00', '2026-09-30 07:40:00', 0);
+
+-- 目标罐预留（P1/P2/P3 生效中；P4 已随方案过期释放）
+INSERT INTO tank_transfer_reservation
+(id, plan_id, batch_id, batch_no, tank_no, reserve_from, reserve_to, status, created_at, released_at, release_reason) VALUES
+(1, 1, 5,  'BC-2026-105', 'FK-13', '2026-09-30 23:00:00', '2026-10-01 14:00:00', 'ACTIVE', '2026-09-30 08:40:00', NULL, NULL),
+(2, 2, 15, 'BC-2026-115', 'FK-13', '2026-09-30 23:30:00', '2026-10-01 12:00:00', 'ACTIVE', '2026-09-30 08:55:00', NULL, NULL),
+(3, 3, 3,  'BC-2026-103', 'FK-10', '2026-10-01 03:00:00', '2026-10-02 06:00:00', 'ACTIVE', '2026-09-30 09:20:00', NULL, NULL),
+(4, 4, 15, 'BC-2026-115', 'FK-14', '2026-10-03 05:00:00', '2026-10-03 20:00:00', 'RELEASED', '2026-09-29 15:00:00', '2026-09-30 07:40:00', 'EXPIRED');
+
+-- P3 第 1 轮五步进度：前两步完成、第 3 步失败、前两步回退
+INSERT INTO tank_transfer_step
+(id, plan_id, attempt_seq, step_seq, step_code, status, started_at, finished_at, note, operator) VALUES
+(1, 3, 1, 1, 'DISCONNECT', 'ROLLED_BACK', '2026-10-01 09:30:00', '2026-10-01 09:45:00',
+ '第 3 步失败，回退本步：吊运转罐时行车抱闸报警', '设备-老郑'),
+(2, 3, 1, 2, 'DRAIN',      'ROLLED_BACK', '2026-10-01 09:46:00', '2026-10-01 10:10:00',
+ '第 3 步失败，回退本步：吊运转罐时行车抱闸报警', '设备-老郑'),
+(3, 3, 1, 3, 'MOVE',       'FAILED',      '2026-10-01 10:11:00', '2026-10-01 10:13:00',
+ '吊运转罐时行车抱闸报警，酒液管路紧急回接原罐', '设备-老郑'),
+(4, 3, 1, 4, 'REFILL',     'PENDING', NULL, NULL, NULL, NULL),
+(5, 3, 1, 5, 'RECONNECT',  'PENDING', NULL, NULL, NULL, NULL);
+
+-- 迁罐操作流水
+INSERT INTO tank_transfer_event
+(id, plan_id, batch_id, batch_no, event_type, step_seq, attempt_seq, from_tank_no, to_tank_no, detail, operator, created_at) VALUES
+(1, 1, 5,  'BC-2026-105', 'PROPOSE', NULL, NULL, 'FK-05', 'FK-13', '生成迁罐方案，预计 2026-10-01 00:00 迁移', '设备-老郑', '2026-09-30 08:40:00'),
+(2, 2, 15, 'BC-2026-115', 'PROPOSE', NULL, NULL, 'FK-12', 'FK-13', '生成迁罐方案（与 BC-2026-105 的方案同时段争抢 FK-13）', '设备-老郑', '2026-09-30 08:55:00'),
+(3, 3, 3,  'BC-2026-103', 'PROPOSE', NULL, NULL, 'FK-03', 'FK-10', '生成迁罐方案，预计 2026-10-01 04:00 迁移', '设备-老郑', '2026-09-30 09:20:00'),
+(4, 3, 3,  'BC-2026-103', 'CONFIRM', NULL, 1, 'FK-03', 'FK-10', '确认迁罐，开始执行五步迁移', '设备-老郑', '2026-09-30 09:25:00'),
+(5, 3, 3,  'BC-2026-103', 'STEP_DONE', 1, 1, 'FK-03', 'FK-10', '第 1 步「断管隔离」已完成', '设备-老郑', '2026-10-01 09:45:00'),
+(6, 3, 3,  'BC-2026-103', 'STEP_DONE', 2, 1, 'FK-03', 'FK-10', '第 2 步「排空原罐」已完成', '设备-老郑', '2026-10-01 10:10:00'),
+(7, 3, 3,  'BC-2026-103', 'STEP_FAIL', 3, 1, 'FK-03', 'FK-10', '第 3 步失败：吊运转罐时行车抱闸报警，酒液管路紧急回接原罐', '设备-老郑', '2026-10-01 10:13:00'),
+(8, 3, 3,  'BC-2026-103', 'ROLLBACK', NULL, 1, 'FK-10', 'FK-03', '已完成步骤全部回退，批次仍在原罐 FK-03，方案退回待处理', '设备-老郑', '2026-10-01 10:14:00'),
+(9, 4, 15, 'BC-2026-115', 'PROPOSE', NULL, NULL, 'FK-12', 'FK-14', '生成迁罐方案，预计 2026-10-03 06:00 迁移', '设备-老郑', '2026-09-29 15:00:00'),
+(10, 4, 15, 'BC-2026-115', 'EXPIRE', NULL, 0, 'FK-12', 'FK-14',
+ '维护窗口已延期（2026-10-03 08:00~20:00 → 2026-10-03 20:00~2026-10-04 12:00），旧方案条件已过期', '系统', '2026-09-30 07:40:00');
+
+-- 历史罐号履历：所有当前在罐/已出罐批次按现有占罐关系回填一段（迁移种子方案未真正执行，批次仍在原罐）
+INSERT INTO batch_tank_history (batch_id, batch_no, stage, tank_no, entered_at, left_at, enter_reason, transfer_plan_id, leave_reason)
+SELECT b.id, b.batch_no, b.status, b.fermenter_no,
+       COALESCE(b.ferment_start, b.mash_start, b.brew_date, CURDATE()),
+       CASE WHEN b.status IN ('PACKAGED','SCRAPPED') THEN CURDATE() ELSE NULL END,
+       'ASSIGN', NULL,
+       CASE WHEN b.status IN ('PACKAGED','SCRAPPED') THEN 'RELEASE' ELSE NULL END
+FROM batch b
+WHERE b.fermenter_no IS NOT NULL;
 
 SET FOREIGN_KEY_CHECKS = 1;

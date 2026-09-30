@@ -39,6 +39,13 @@ export const navItems = [
     icon: '📦',
     label: '灌装与出货',
     hint: '灌装损耗 + 出货金额汇总'
+  },
+  {
+    key: 'maintenance',
+    path: '/maintenance',
+    icon: '🛠️',
+    label: '维护与迁罐',
+    hint: '维护日历 + 冲突清单 + 迁罐预览 + 五步处理进度'
   }
 ]
 
@@ -49,6 +56,7 @@ const routes = [
   { path: '/recipe', name: 'recipe', component: () => import('../views/RecipeView.vue') },
   { path: '/ingredient', name: 'ingredient', component: () => import('../views/IngredientView.vue') },
   { path: '/shipping', name: 'shipping', component: () => import('../views/ShippingView.vue') },
+  { path: '/maintenance', name: 'maintenance', component: () => import('../views/MaintenanceView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/fermenter' }
 ]
 

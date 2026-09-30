@@ -40,6 +40,14 @@ public class Batch {
     @Column(name = "fermenter_no", length = 16)
     private String fermenterNo;
 
+    /** 模块七：未来待入罐批次的计划罐号（PLAN 阶段排程用） */
+    @Column(name = "planned_tank_no", length = 16)
+    private String plannedTankNo;
+
+    /** 模块七：计划入罐时间 */
+    @Column(name = "planned_enter_at")
+    private LocalDateTime plannedEnterAt;
+
     /** 酿酒师 */
     @Column(name = "brewer", length = 32)
     private String brewer;
