@@ -70,6 +70,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 迁罐方案过期：维护时间/目标罐状态在确认前被改动，或目标罐已被抢占，
+     * 旧方案拒绝确认，需按最新条件重新计算
+     */
+    @ExceptionHandler(StalePlanException.class)
+    public ResponseEntity<ApiResponse<Void>> handleStalePlan(StalePlanException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.fail(e.getMessage()));
+    }
+
+    /**
      * 悲观行锁等待超时：并发的放行/下游推进已被串行化，提示重试而不是产生两条状态链
      */
     @ExceptionHandler(CannotAcquireLockException.class)
